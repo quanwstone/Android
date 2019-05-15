@@ -1,0 +1,5 @@
+针对android进行媒体测试
+AudioCapture.java：利用AudioRecord实现音频的录制
+AudioPlayer.java： 利用AudioTrack实现音频的播放
+VideoCapture.java：利用Camera实现视频的采集
+VideoHWEncode.java 利用MediaCodec实现视频的硬件编码.
