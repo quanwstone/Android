@@ -1,178 +1,302 @@
-package com.first.audiocapture;
+package com.qw.audiocapture;
 
-/**
- * Created by Administrator on 2019/5/15.
- *硬件编码利用MediaCodec流程如下：
- * 1）根据名称创建对应的编码器
- * 2）设置编码器参数
- * 3）通过输入输出队列进行编码，
- * 4）编码后数据需要进行手动组合，每个I帧前需要填充sps和pps，
- */
 import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
+import android.os.Bundle;
+import android.os.Environment;
 import android.util.Log;
-import android.media.MediaCodecInfo;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-public class VideoHWEncode {
-    private static String TAG = VideoHWEncode.class.getName();
-    // video device.
-    private MediaCodec vencoder;
-    private MediaCodecInfo vmci;
-    private MediaCodec.BufferInfo vebi;
-    private byte[] vbuffer;
-    // video camera settings.
-    private static final String VCODEC = "video/avc";       //编码器类型
-    private int vcolor;                    //编码格式
-    private int vbitrate_kbps = 300;     //码率大小kbps
-    private final static int VFPS = 15; //FPS长度
-    private final static int VGOP = 5;  //GOP长度
-    private int m_iW = 320;         //原始数据高度
-    private int m_iH = 240;         //原始数据宽度
-    private int m_iMode =MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR;   //码率格式
+/**
+ * Created by Administrator on 2019/11/14.
+ */
 
-    private int m_iTimeOut = -1;// 表示一直等待类似于INFINIT
-    ByteBuffer[] m_inputBuffer = null;      //用于编码输入队列
-    ByteBuffer[] m_outputBuffer = null;     //用于编码输出队列
 
-    /* 首先需要初始化MediaCodec的配置 */
-    private void initMediaCodec() {
+public class VideoEncode {
+    private static String TAG = VideoEncode.class.getName();
 
-        vcolor = chooseVideoEncoder();
-        try {
-            vencoder = MediaCodec.createByCodecName(vmci.getName());
-        } catch (IOException e) {
-            Log.e(TAG, "create vencoder failed.");
-            e.printStackTrace();
-            return;
-        }
-        vebi = new MediaCodec.BufferInfo();
-        // setup the vencoder.
-        // @see https://developer.android.com/reference/android/media/MediaCodec.html
-        MediaFormat vformat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, m_iW, m_iH);
+    private MediaCodecInfo m_info = null;//定义CodecInfo
+    private String m_strcodec;//codec名称
+    private String m_strType;//codec 类型
+    private int m_codeccount;//codec个数
+    private MediaCodec m_codec;//codec对象
 
-        vformat.setInteger(MediaFormat.KEY_COLOR_FORMAT, vcolor);
-        vformat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 0);
-        vformat.setInteger(MediaFormat.KEY_BIT_RATE, 1000 * vbitrate_kbps);
-        vformat.setInteger(MediaFormat.KEY_FRAME_RATE, VFPS);
-        vformat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VGOP);
-        vformat.setInteger(MediaFormat.KEY_BITRATE_MODE,m_iMode);
-        vencoder.configure(vformat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        vencoder.start();
+    private int m_H;
+    private int m_W;
+    private int m_Fps;
+    private int m_Mode;
+    private int m_Gop;
+    private int m_BitRate;
+    private int m_Color;
+    private int m_Profile;
+    private int m_Level;
 
-        m_inputBuffer = vencoder.getInputBuffers();
-        m_outputBuffer = vencoder.getOutputBuffers();
+    private ByteBuffer[] m_InputBuffer;
+    private ByteBuffer[] m_OutputBuffer;
+
+    private long m_TimeDelay;
+    private MediaCodec.BufferInfo m_pBufferInfo;
+
+    private File m_pFile;
+    private FileInputStream m_InputFile;
+
+    private File m_pFileDest;
+    private FileOutputStream m_OutputFile;
+
+    private boolean m_bRun;
+    private byte[] m_srcData;
+    private byte[] m_outData;
+    private int m_iFrameSize;
+    private ReadThread m_pThread;
+
+    public VideoEncode()
+    {
+        m_H = 240;
+        m_W = 320;
+        m_Fps = 15;
+        m_Gop = 1;
+        m_BitRate = 240;//Kbps
+        m_Mode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR;
+        m_Profile =MediaCodecInfo.CodecProfileLevel.AVCProfileMain;
+        m_Level = MediaCodecInfo.CodecProfileLevel.AVCLevel1b;
+
+        m_pBufferInfo = new MediaCodec.BufferInfo();
+        m_TimeDelay = -1;//INFINITE
+        m_bRun = false;
+        m_iFrameSize = m_H *m_W *3/2;
+        m_srcData = new byte[m_iFrameSize];//NV21
+        m_outData = new byte[m_iFrameSize];
 
     }
-
-    public boolean VideoEncode(byte[] str,int iSrc,byte[] out,int iOut)
+    public boolean InitPragram()
     {
-        int index = vencoder.dequeueInputBuffer(m_iTimeOut);
-        if(index >=0)
-        {
-            ByteBuffer inputBuffer = m_inputBuffer[index];
-            inputBuffer.clear();
-            inputBuffer.put(str,0,iSrc);
+        MediaCodecInfo.CodecCapabilities cs = m_info.getCapabilitiesForType(m_strType);//获取对应编码器类型的属性信息
 
-            long presentationTimeUs = System.currentTimeMillis();
-            vencoder.queueInputBuffer(index,0,iSrc,presentationTimeUs,0);
+        for(int i=0;i<cs.colorFormats.length;i++)
+        {
+            if(cs.colorFormats[i] == cs.COLOR_FormatYUV420SemiPlanar)
+            {
+                m_Color = cs.COLOR_FormatYUV420SemiPlanar;
+                Log.d(TAG,"ColorForamt=="+m_Color);
+            }
         }
 
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-
-        int encoderR = vencoder.dequeueOutputBuffer(info,m_iTimeOut);
-        if(encoderR >=0)
-        {
-            ByteBuffer encodeData = m_outputBuffer[encoderR];
-            encodeData.position(info.offset);
-            encodeData.limit(info.offset+info.size);
-
-            encodeData.get(out,0,info.size);
-            iOut = info.size;
-        }
         return true;
     }
-    public void Close()
+    public boolean GetSuportForamt(String strcodec)
     {
-        vencoder.release();
+        m_codeccount = MediaCodecList.getCodecCount();//获取codec个数
+        Log.d(TAG,"codecCount="+m_codeccount);
 
-    }
-    // for the vbuffer for YV12(android YUV), @see below:
-// https://developer.android.com/reference/android/hardware/Camera.Parameters.html#setPreviewFormat(int)
-// https://developer.android.com/reference/android/graphics/ImageFormat.html#YV12
-    private int getYuvBuffer(int width, int height) {
-        // stride = ALIGN(width, 16)
-        int stride = (int) Math.ceil(width / 16.0) * 16;
-        // y_size = stride * height
-        int y_size = stride * height;
-        // c_stride = ALIGN(stride/2, 16)
-        int c_stride = (int) Math.ceil(width / 32.0) * 16;
-        // c_size = c_stride * height/2
-        int c_size = c_stride * height / 2;
-        // size = y_size + c_size * 2
-        return y_size + c_size * 2;
-    }
+        for(int i=0;i<m_codeccount;i++)
+        {
+            MediaCodecInfo info = MediaCodecList.getCodecInfoAt(i);//获取codecinfo
+            Log.d(TAG,"CodecName=="+info.getName());
 
-    // choose the video encoder by name.
-    private MediaCodecInfo chooseVideoEncoder(String name, MediaCodecInfo def) {
-        int nbCodecs = MediaCodecList.getCodecCount();
-        for (int i = 0; i < nbCodecs; i++) {
-            MediaCodecInfo mci = MediaCodecList.getCodecInfoAt(i);
-            if (!mci.isEncoder()) {
-                continue;
-            }
-            String[] types = mci.getSupportedTypes();
-            for (int j = 0; j < types.length; j++) {
-                if (types[j].equalsIgnoreCase(VCODEC)) {
-                    //Log.i(TAG, String.format("vencoder %s types: %s", mci.getName(), types[j]));
-                    if (name == null) {
-                        return mci;
+            if(info.isEncoder())//判断当前codec是否支持编码
+            {
+                String[] str = info.getSupportedTypes();//获取支持的类型
+                for(int j =0;j<str.length;j++)
+                {
+                    Log.d(TAG,"Type=="+str[j]+" Name=="+info.getName());
+
+                    if(str[j].contains(strcodec))
+                    {
+                        m_info = info;
+                        m_strcodec = m_info.getName();
+                        m_strType = str[j];
+
+                        Log.d(TAG,"get codecinfo.");
                     }
-
-                    if (mci.getName().contains(name)) {
-                        return mci;
+                    if(info.getName().contains(strcodec))//判断是否与希望的相同
+                    {
+                        m_info = info;
+                        Log.d(TAG,"get codecinfo.");
                     }
                 }
             }
         }
-        return def;
+
+
+        return true;
+    }
+    public boolean pushdata(byte[] data,int iSize,byte[] outData,int[] iLen,int iCount) {
+
+//        if(iCount % 10 == 0)设置一次将会一直输出I帧
+//        {
+//            Bundle params = new Bundle();
+//            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+//            m_codec.setParameters(params);//app level 19  //强制I帧
+//            Log.d(TAG,"setParameters");
+//        }
+        int iIndex = m_codec.dequeueInputBuffer(m_TimeDelay);//获取一个可用的输入缓冲区
+        if (iIndex >= 0) {
+            ByteBuffer input = m_InputBuffer[iIndex];//获取输入队列中一个空闲的成员
+            input.clear();
+            input.put(data, 0, iSize);//填充数据
+
+            long presentationtimeus =1000 * (iCount * 20);//用于设置时间戳 microseconds
+
+            m_codec.queueInputBuffer(iIndex, 0, iSize, presentationtimeus,0);//填充一个ByteBuffer到输入队列,最后一个参数
+        }else{
+            Log.d(TAG,"dequeueInputBuffer Failed.");
+            return false;
+        }
+
+        //同步获取编码后数据
+        int iIndex2 = m_codec.dequeueOutputBuffer(m_pBufferInfo, m_TimeDelay);
+        if (iIndex2 >= 0)
+        {
+            ByteBuffer output = m_OutputBuffer[iIndex2];
+            output.position(m_pBufferInfo.offset);//设置缓冲区起始位置
+            output.limit(m_pBufferInfo.offset + m_pBufferInfo.size);//设置缓冲区有效区间
+
+            output.get(outData,0,m_pBufferInfo.size);//将有效数据写入数组
+            iLen[0] = m_pBufferInfo.size;
+
+            Log.d(TAG,"output offset="+m_pBufferInfo.offset+"Size"+m_pBufferInfo.size);
+        }else{
+            Log.d(TAG,"dequeueOutputBuffer Failed.");
+            return false;
+        }
+        m_codec.releaseOutputBuffer(iIndex2,false);//回收缓存
+
+        return true;
     }
 
-    // choose the right supported color format. @see below:
-// https://developer.android.com/reference/android/media/MediaCodecInfo.html
-// https://developer.android.com/reference/android/media/MediaCodecInfo.CodecCapabilities.html
-    private int chooseVideoEncoder() {
-        // choose the encoder "video/avc":
-        //      1. select one when type matched.
-        //      2. perfer google avc.
-        //      3. perfer qcom avc.
-        vmci = chooseVideoEncoder(null, null);
+    public boolean InitCodec()
+    {
+        try
+        {
+            //m_codec = MediaCodec.createByCodecName(m_strcodec);//创建MediaCodec,最小支持版本为16可通过build.gradle进行修改,当前方法不支持关键帧间隔设置，且不生成B帧
+            m_codec = MediaCodec.createEncoderByType(m_strType);//创建MediaCodec.当前方法支持关键帧间隔设置.而且会生成B帧
+            Log.d(TAG,"codec:"+m_strcodec+" Type:"+m_strType);
+        }catch (IOException e)
+        {
+            e.printStackTrace();
+        }
 
-        int matchedColorFormat = 0;
+        MediaFormat vformat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC,m_W,m_H);//获取MediaForamt对象
 
-        MediaCodecInfo.CodecCapabilities cc = vmci.getCapabilitiesForType(VCODEC);
-        for (int i = 0; i < cc.colorFormats.length; i++) {
-            int cf = cc.colorFormats[i];
-            Log.i(TAG, String.format("vencoder %s supports color fomart 0x%x(%d)", vmci.getName(), cf, cf));
+        vformat.setInteger(MediaFormat.KEY_FRAME_RATE,m_Fps);
+        vformat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,m_Gop);
+        vformat.setInteger(MediaFormat.KEY_WIDTH,m_W);
+        vformat.setInteger(MediaFormat.KEY_HEIGHT,m_H);
+        vformat.setInteger(MediaFormat.KEY_BITRATE_MODE,m_Mode);
+        vformat.setInteger(MediaFormat.KEY_BIT_RATE,m_BitRate * 1000);//单位为bps
+        vformat.setInteger(MediaFormat.KEY_COLOR_FORMAT,m_Color);
+        //vformat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,0);
+        vformat.setInteger(MediaFormat.KEY_PROFILE,m_Profile);
+        vformat.setInteger(MediaFormat.KEY_LEVEL,m_Level);
 
-            // choose YUV for h.264, prefer the bigger one.
-            // corresponding to the color space transform in onPreviewFrame
-            if ((cf >= cc.COLOR_FormatYUV420Planar && cf <= cc.COLOR_FormatYUV420SemiPlanar)) {
-                if (cf > matchedColorFormat) {
-                    matchedColorFormat = cf;
+        m_codec.configure(vformat,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);//配置编码信息
+
+        m_codec.start();//成功配置完成后调用开始
+
+        m_InputBuffer = m_codec.getInputBuffers();//获取输入缓冲区 需要start之后调用.
+        m_OutputBuffer = m_codec.getOutputBuffers();//获取输出缓冲区
+
+        return true;
+    }
+    public boolean Start()
+    {
+        m_pThread = new ReadThread();
+        m_pThread.start();
+        m_bRun = true;
+
+        return true;
+    }
+
+    public boolean Close()
+    {
+        m_bRun = false;
+
+        try{
+            m_pThread.join();
+        }catch(InterruptedException e)
+        {
+            e.printStackTrace();
+        }
+
+        try{
+
+            m_OutputFile.close();
+            m_InputFile.close();
+
+        }catch(IOException e)
+        {
+            e.printStackTrace();
+        }
+
+
+        return true;
+    }
+
+    public boolean openfile()
+    {
+        String path = Environment.getExternalStorageDirectory().getAbsolutePath() +"/"+"Video.yuv";
+        String path_dest =  Environment.getExternalStorageDirectory().getAbsolutePath() +"/"+"video.h264";
+
+        Log.d(TAG,path);
+
+        try{
+            m_pFile = new File(path);
+            m_InputFile = new FileInputStream(m_pFile);
+
+            m_pFileDest = new File(path_dest);
+            if(!m_pFileDest.exists())
+            {
+                m_pFileDest.createNewFile();
+            }
+            m_OutputFile = new FileOutputStream(m_pFileDest);
+
+        }catch(IOException e)
+        {
+            e.printStackTrace();
+        }
+
+        return true;
+    }
+
+    public class ReadThread extends  Thread
+    {
+        @Override
+        public void run()
+        {
+            int[] iSize = new int[1];
+            openfile();
+            int iCount = 0;
+
+            while(m_bRun)
+            {
+                try{
+                    int ir = m_InputFile.read(m_srcData,0,m_iFrameSize);
+                    if(ir> 0)
+                    {
+                        iCount++;
+
+                        boolean br = pushdata(m_srcData,ir,m_outData,iSize,iCount);
+                        if(br)
+                        {
+                            m_OutputFile.write(m_outData,0,iSize[0]);
+                        }
+                    }else
+                    {
+                        break;
+                    }
+                }catch(IOException e)
+                {
+                    e.printStackTrace();
                 }
             }
         }
-        for (int i = 0; i < cc.profileLevels.length; i++) {
-            MediaCodecInfo.CodecProfileLevel pl = cc.profileLevels[i];
-            Log.i(TAG, String.format("vencoder %s support profile %d, level %d", vmci.getName(), pl.profile, pl.level));
-        }
-        Log.i(TAG, String.format("vencoder %s choose color format 0x%x(%d)", vmci.getName(), matchedColorFormat, matchedColorFormat));
-        return matchedColorFormat;
     }
 }
-
-
